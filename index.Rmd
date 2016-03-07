@@ -1,22 +1,190 @@
 ---
-title: "Practical Machine Learning Courser Project"
+title: "Practical Machine Learning Coursera Project"
 author: "Carlos Teles"
-date: "Sunday, March 06, 2016"
 output: html_document
 ---
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+##Summary
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The goal of this project is to predict the manner in which a group of enthusiasts did exercises. The data consists of wearable sensors measurements  of that group who take measurements about themselves regularly. 
 
+
+ 
+##Data Setup
+
+Loading required packages and reading the dataset:
+
+```{r message=FALSE}
+library(caret)
+library(gbm)
+
+data1 = read.csv("D:pml-training.csv")
+testing = read.csv("D:pml-testing.csv")
+```
+
+
+
+##Partitioning the training set
+
+In order to estimate the Accuracy of the model, I will randomly split data into two parts, the training sample with 70% of observations and the validation sample, like this:
 ```{r}
-summary(cars)
+
+set.seed(123)
+
+ind<-createDataPartition(y=data1$classe,p=0.7,list=FALSE)
+
+training<-data1[ind,]
+
+validation<-data1[-ind,]
+
+``` 
+
+
+#Feature selection
+
+Selecting features with too much(more then 50% of presence) NA,empty or error value(#DIV/0!) 
+```{r}
+
+del<-1
+
+for (i in 1:ncol(training)) {
+
+  a<-sum( ifelse( is.na(training[,i]) | training[,i]=='' |training[,i]==c('#DIV/0!')   ,1,0 )/nrow(training))
+
+  #considering to remove a > 50% 
+  if(a>0.5){
+    
+    del<-append(del,colnames(training)[i])
+    
+          }
+    
+                            }
+
+training_cl<-training[ , !(names(training) %in% del)]
+
 ```
 
-You can also embed plots, for example:
 
-```{r, echo=FALSE}
-plot(cars)
+
+training_cl has only 60 of the 159 features, let's check if it is possible to reduce even more this number using nearZeroVar to check nearly zero variance.
+
+```{r echo=TRUE}
+nsv<-nearZeroVar(training_cl,saveMetrics=TRUE)
+
+nsv
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+##Throwing non-informative features:
+ From nsv we can conclude that variable X is non-informative, so:
+```{r echo=TRUE}
+training_cl$X<-NULL
+
+```
+
+new_window is nzv and has only 2% of yes:
+
+```{r echo=TRUE}
+# minus 1 beacuse of the training_cl$X<-NULL
+prop.table(summary(training_cl[,which(nsv$nzv)-1]))*100
+
+```
+
+new_window is nzv, however I'm not confortable to throw this variable out, only nzv=TRUE not necessatily means that this predictor is non-informative.
+
+
+
+
+
+Checking correlation between features (numeric ones):
+```{r echo=TRUE}
+correlation<-abs(cor(training_cl[,unlist(lapply(training_cl, is.numeric))]))
+
+diag(correlation) <- 0
+
+sum(ifelse(correlation>0.8,1,0))
+
+```
+As you can see there is 38 strong correlations, so might be a good idea to use PCA preprocessing.
+
+
+##Model Building
+
+I will build a model using gbm because is a robust algorithm if correctly tunned. The model will fit on the training sample(training_cl) and predict on the training and validation samples. The Accuracy will be measured and used as a error metric. I will use a 3-fold cross-validation and a alternative Tuning Grids.
+
+In the trainControl I will change the default value of threshold to 0.8, and in the grid I will increase the range values of n.tree and interaction depth in order to select the optimal parameters.
+
+```{r echo=TRUE}
+
+fitControl <- trainControl(method = "cv",
+                           number = 3,
+                           preProcOptions = list(thresh = 0.8))
+
+gbmGrid <-  expand.grid(interaction.depth = seq(9,21,4),
+                        n.trees =  seq(200,900,10) ,
+                        shrinkage = c(0.1),
+                        n.minobsinnode=10
+                        )
+
+
+set.seed(321)
+
+
+training_cl$class<-NULL
+
+gbmFit <- train(classe ~ .,method="gbm",
+                data=training_cl,
+                trControl=fitControl,
+                metric="Accuracy",
+                tuneGrid = gbmGrid,
+                preProc="pca",
+                 verbose = FALSE
+                )
+
+```
+
+#Model Evaluation 
+
+
+From the fit is possible to see that all predictors has relatively high importance:
+
+```{r echo=TRUE}
+ggplot(varImp(gbmFit, scale = FALSE))
+
+```
+
+Unfortunately my hardware can't handle more trees, however the choosen parameters are enough to achive a relativilly high Accuracy. 
+
+```{r echo=TRUE}
+ggplot(gbmFit)
+
+```
+
+From this graphic and from the gbmFit is possible to check the choosen parameters. The final values used for the model were n.trees = 900 and interaction.depth = 21. This big number of trees helps to avoid overfiting, on the other hand the predictors have to be informative to really avoid overfiting. 
+
+
+#In-sample accuracy
+
+```{r echo=TRUE}
+
+pred_in <- predict(gbmFit, training_cl)
+
+confusionMatrix(pred_in, training_cl$classe)
+
+```
+
+
+#Out-of-sample accuracy
+
+
+```{r echo=TRUE}
+
+pred_out <- predict(gbmFit, validation)
+
+confusionMatrix(pred_out, validation$classe)
+
+```
+
+
+The in-sample and the and the out-of-sample accuracy are 100%  and 99% respectivilly.Therefore this model perform well. The model could predict with high accuracy on the validadtion and on the testing sample (20 cases with 100% accuracy as well).
